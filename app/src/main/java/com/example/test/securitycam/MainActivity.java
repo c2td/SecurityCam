@@ -1,7 +1,10 @@
 package com.example.test.securitycam;
 
 import android.Manifest;
+import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.SurfaceTexture;
@@ -12,6 +15,7 @@ import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CameraManager;
 import android.hardware.camera2.CaptureRequest;
 import android.hardware.camera2.params.StreamConfigurationMap;
+import android.net.Uri;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
@@ -25,6 +29,7 @@ import android.view.Surface;
 import android.view.TextureView;
 import android.view.View;
 import android.widget.Button;
+import android.widget.Toast;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -51,6 +56,23 @@ public class MainActivity extends AppCompatActivity {
     private CaptureRequest.Builder mCaptureRequestBuilder;
     private File mGalleryFolder;
     private final int CAMERA_REQUEST_CODE = 200;
+    private Intent mCameraService;
+    private File mImageFile;
+
+    private BroadcastReceiver receiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            Bundle bundle = intent.getExtras();
+            Log.d("--","--Received broadcast from service");
+            if (bundle != null) {
+                if (bundle.getInt("resultCode") == 1) {
+                   //setUpCamera();
+                    //openCamera();
+                    onTakePhoto();
+                }
+            }
+        }
+    };
 
     private static final SparseIntArray ORIENTATIONS = new SparseIntArray();
     static {
@@ -95,6 +117,7 @@ public class MainActivity extends AppCompatActivity {
 
         };
 
+
         mTextureView = findViewById(R.id.textureview);
         mPhotoButton = findViewById(R.id.getpicture);
 
@@ -120,7 +143,12 @@ public class MainActivity extends AppCompatActivity {
             }
         };
 
-        //startService(new Intent(MainActivity.this, CameraService.class));
+        // start and trigger a service
+        mCameraService = new Intent(this, CameraService.class);
+        // potentially add data to the intent
+        //i.putExtra("KEY1", "Value to be used by the service");
+        startService(mCameraService);
+
     }
 
     private void createImageGallery() {
@@ -137,7 +165,9 @@ public class MainActivity extends AppCompatActivity {
     private File createImageFile(File galleryFolder) throws IOException {
         String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(new Date());
         String imageFileName = "image_" + timeStamp + "_";
-        return File.createTempFile(imageFileName, ".jpg", galleryFolder);
+        mImageFile = File.createTempFile(imageFileName, ".jpg", galleryFolder);
+        Log.d("--", "File is " + mImageFile.getAbsolutePath());
+        return mImageFile;
     }
 
     private void setUpCamera() {
@@ -157,6 +187,8 @@ public class MainActivity extends AppCompatActivity {
                     // the zeroth element is the resolution we want  —  the highest available one.
                     mPreviewSize = streamConfigurationMap.getOutputSizes(SurfaceTexture.class)[0];
                     mCameraId = cameraId;
+
+                    Log.d("--", "Setting up camera");
                 }
             }
         } catch (CameraAccessException e) {
@@ -169,6 +201,7 @@ public class MainActivity extends AppCompatActivity {
             if (ActivityCompat.checkSelfPermission(this, android.Manifest.permission.CAMERA)
                     == PackageManager.PERMISSION_GRANTED) {
                 mCameraManager.openCamera(mCameraId, mStateCallback, mBackgroundHandler);
+                Log.d("--", "Opening camera");
             }
         } catch (CameraAccessException e) {
             e.printStackTrace();
@@ -223,29 +256,35 @@ public class MainActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
+
+        // register br
+        registerReceiver(receiver, new IntentFilter(
+                CameraService.NOTIFICATION));
+
         openBackgroundThread();
-        if (mTextureView.isAvailable()) {
-            setUpCamera();
-            openCamera();
-        } else {
-            mTextureView.setSurfaceTextureListener(mSurfaceTextureListener);
-        }
+        mTextureView.setSurfaceTextureListener(mSurfaceTextureListener);
+
         mPhotoButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                createImageGallery();
                 onTakePhoto();
             }
         });
     }
 
     public void onTakePhoto() {
+        Toast.makeText(MainActivity.this,
+                "Photo taken",
+                Toast.LENGTH_SHORT).show();
+        Log.d("--","--Photo taken");
+        createImageGallery();
         lock();
         FileOutputStream outputPhoto = null;
         try {
             outputPhoto = new FileOutputStream(createImageFile(mGalleryFolder));
             mTextureView.getBitmap()
                     .compress(Bitmap.CompressFormat.PNG, 100, outputPhoto);
+            sendMail();
         } catch (Exception e) {
             e.printStackTrace();
         } finally {
@@ -257,7 +296,21 @@ public class MainActivity extends AppCompatActivity {
             } catch (IOException e) {
                 e.printStackTrace();
             }
+            //this.finish();
+            //closeCamera();
         }
+    }
+
+    private void sendMail() {
+
+        try {
+            Log.d("--", "Trying to send email");
+            GMailSender sender = new GMailSender("someone_@somewhere_.com", "somepassword");
+            sender.sendMailAsync(mImageFile);
+        } catch (Exception e) {
+            Log.e("SendMail", e.getMessage(), e);
+        }
+
     }
 
     private void lock() {
@@ -276,6 +329,12 @@ public class MainActivity extends AppCompatActivity {
         } catch (CameraAccessException e) {
             e.printStackTrace();
         }
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        unregisterReceiver(receiver);
     }
 
     @Override
@@ -303,5 +362,11 @@ public class MainActivity extends AppCompatActivity {
             mBackgroundThread = null;
             mBackgroundHandler = null;
         }
+    }
+
+    @Override
+    protected void onDestroy() {
+        stopService(mCameraService);
+        super.onDestroy();
     }
 }
